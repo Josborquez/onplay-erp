@@ -1,0 +1,131 @@
+// Bloque 1 — modelo de identidad del staff del ERP Onplay.
+// Stack fijo (CLAUDE.md B5): Prisma + MySQL.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "mysql"
+  url      = env("DATABASE_URL")
+}
+
+// Los 4 roles de staff de la fundación (00-fundacion.md §4.1).
+enum Role {
+  SUPER_ADMIN
+  STORE_ADMIN
+  ACCOUNTANT
+  SALES_ASSISTANT
+}
+
+model User {
+  id           Int      @id @default(autoincrement())
+  email        String   @unique
+  name         String
+  role         Role
+  passwordHash String? // null = usuario solo-Google (sin clave local)
+  pinHash      String // PIN único por persona (R6), siempre presente
+  googleSub    String?  @unique // subject de Google, null hasta el primer login Google
+  isActive     Boolean  @default(true)
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  sessions  Session[]
+  auditLogs AuditLog[]
+}
+
+model Session {
+  id                String    @id @default(uuid())
+  userId            Int
+  user              User      @relation(fields: [userId], references: [id])
+  createdAt         DateTime  @default(now())
+  absoluteExpiresAt DateTime // expiración dura de la sesión (R3, server-side)
+  lastActivityAt    DateTime  @default(now()) // base del contador de inactividad
+  revokedAt         DateTime? // logout / re-login → sesión muerta
+
+  @@index([userId])
+}
+
+model AuditLog {
+  id        Int      @id @default(autoincrement())
+  userId    Int?
+  user      User?    @relation(fields: [userId], references: [id])
+  action    String // LOGIN, LOGIN_GOOGLE, LOGOUT, UNLOCK, LOGIN_FAILED, ...
+  detail    String?
+  createdAt DateTime @default(now())
+
+  @@index([userId])
+}
+
+// ───────────────────────────────────────────────────────────────────
+// Bloque 2 — Catálogo (sub-tanda 2A). Inventario (StockUnit, Reserva,
+// movimientos) llega en 2B; aquí solo el catálogo y la tabla Settings.
+// ───────────────────────────────────────────────────────────────────
+
+// Las 4 categorías de producto (bloque-2 §2).
+enum ProductType {
+  SINGLE
+  SEALED
+  SNACK
+  ACCESSORY
+}
+
+// Cómo se rastrea el stock de un producto (bloque-2 §2.2):
+// UNIDAD = una fila por carta (singles); CANTIDAD = contadores (resto).
+enum TrackingMode {
+  UNIDAD
+  CANTIDAD
+}
+
+model Game {
+  id                   Int       @id @default(autoincrement())
+  name                 String    @unique
+  referencePriceSource String // CardKingdom (MTG), TCGPlayer (One Piece, …)
+  createdAt            DateTime  @default(now())
+  updatedAt            DateTime  @updatedAt
+  products             Product[]
+}
+
+model Product {
+  id           Int          @id @default(autoincrement())
+  type         ProductType
+  trackingMode TrackingMode
+  name         String
+  sku          String?      @unique // singles: SET-num-COND-LANG; resto opcional
+  gameId       Int?
+  game         Game?        @relation(fields: [gameId], references: [id])
+  isActive     Boolean      @default(true)
+
+  // Costo y precio en CLP (enteros: el peso chileno no tiene decimales).
+  // margen = precio − costo se calcula al leer; no se persiste.
+  costo  Int?
+  precio Int?
+
+  // Precio de referencia en USD (singles): base del precio sugerido de venta.
+  referencePrice Decimal? @db.Decimal(10, 2)
+
+  // Atributos extra de un single (bloque-2 §3); null para el resto.
+  setCode         String?
+  setName         String?
+  collectorNumber String?
+  foil            Boolean?
+  rarity          String?
+  condition       String?
+  language        String?
+  scryfallId      String?
+  misprint        Boolean?
+  altered         Boolean?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([gameId])
+}
+
+// Parámetros de negocio editables en runtime (bloque-2 §5.3).
+// Clave-valor: el valor se guarda como texto y se parsea al leer.
+model Setting {
+  key       String   @id
+  value     String
+  updatedAt DateTime @updatedAt
+}

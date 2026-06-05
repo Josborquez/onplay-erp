@@ -1,0 +1,19 @@
+# Dependencias
+node_modules/
+
+# Secretos y entorno (NUNCA subir)
+.env
+.env.local
+.env.test
+.env.*.local
+
+# Build / artefactos
+dist/
+*.log
+
+# Claude Code (configuración local de la máquina)
+.claude/settings.local.json
+
+# Sistema
+.DS_Store
+Thumbs.db
