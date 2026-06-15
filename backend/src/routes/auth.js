@@ -20,6 +20,16 @@ const loginLimiter = rateLimit({
   message: { error: "demasiados intentos, intente más tarde" },
 });
 
+// Rate limit en unlock: el PIN es de pocos dígitos (10.000 combinaciones), así
+// que con una sesión robada se podría forzar. Freno por IP, sin revelar nada.
+const unlockLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 10,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: "demasiados intentos, intente más tarde" },
+});
+
 // Crea una sesión nueva para un usuario y devuelve el token firmado.
 async function startSession(userId) {
   const now = new Date();
@@ -106,7 +116,7 @@ authRouter.post("/google", loginLimiter, async (req, res, next) => {
 
 // POST /api/auth/unlock — desbloqueo de pantalla con PIN (R: §3.3/§3.4).
 // Usa requireSession: debe funcionar con la pantalla bloqueada.
-authRouter.post("/unlock", requireSession, async (req, res, next) => {
+authRouter.post("/unlock", unlockLimiter, requireSession, async (req, res, next) => {
   try {
     const { pin } = req.body || {};
     const { user, session } = req.auth;
