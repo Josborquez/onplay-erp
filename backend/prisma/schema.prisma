@@ -32,6 +32,10 @@ model User {
 
   sessions  Session[]
   auditLogs AuditLog[]
+
+  // Inventario (2B): quién creó cada reserva y cada movimiento de stock.
+  reservations Reservation[]
+  movements    StockMovement[]
 }
 
 model Session {
@@ -119,6 +123,12 @@ model Product {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
+  // Inventario (2B): unidades/niveles, reservas y movimientos de este producto.
+  stockUnits   StockUnit[]
+  stockLevels  StockLevel[]
+  reservations Reservation[]
+  movements    StockMovement[]
+
   @@index([gameId])
 }
 
@@ -128,4 +138,115 @@ model Setting {
   key       String   @id
   value     String
   updatedAt DateTime @updatedAt
+}
+
+// ───────────────────────────────────────────────────────────────────
+// Bloque 2B — Motor de inventario. Dos modos de rastreo (UNIDAD/CANTIDAD)
+// y el contrato reservar → (confirmar | liberar) bajo candado de fila.
+// ───────────────────────────────────────────────────────────────────
+
+// Estado de una unidad física (modo UNIDAD, singles).
+enum StockUnitState {
+  DISPONIBLE
+  RESERVADA
+  VENDIDA
+}
+
+// Estado del ciclo de vida de una reserva.
+enum ReservationState {
+  ACTIVA
+  CONFIRMADA
+  LIBERADA
+  EXPIRADA
+}
+
+// Tipo de movimiento físico de stock (entradas/salidas reales).
+enum StockMovementType {
+  ENTRADA
+  SALIDA
+  AJUSTE
+  TRANSFERENCIA
+}
+
+// Ubicación física del stock. 2B opera solo sobre `tienda`; las ferias se
+// modelan aquí para el futuro (sin endpoint de transferencia todavía).
+model Location {
+  id        Int      @id @default(autoincrement())
+  name      String   @unique
+  isDefault Boolean  @default(false)
+  createdAt DateTime @default(now())
+
+  stockUnits   StockUnit[]
+  stockLevels  StockLevel[]
+  reservations Reservation[]
+  movements    StockMovement[]
+}
+
+// Modo UNIDAD (singles): una fila por carta.
+model StockUnit {
+  id            Int            @id @default(autoincrement())
+  productId     Int
+  product       Product        @relation(fields: [productId], references: [id])
+  locationId    Int
+  location      Location       @relation(fields: [locationId], references: [id])
+  state         StockUnitState @default(DISPONIBLE)
+  reservationId Int?
+  reservation   Reservation?   @relation(fields: [reservationId], references: [id])
+  createdAt     DateTime       @default(now())
+  updatedAt     DateTime       @updatedAt
+
+  @@index([productId, locationId, state])
+  @@index([reservationId])
+}
+
+// Modo CANTIDAD (sellado, snack, accesorio): contadores por producto/ubicación.
+model StockLevel {
+  id         Int      @id @default(autoincrement())
+  productId  Int
+  product    Product  @relation(fields: [productId], references: [id])
+  locationId Int
+  location   Location @relation(fields: [locationId], references: [id])
+  available  Int      @default(0)
+  reserved   Int      @default(0)
+  updatedAt  DateTime @updatedAt
+
+  @@unique([productId, locationId])
+}
+
+// Reserva: audita el ciclo reservar → (confirmar | liberar | expirar).
+model Reservation {
+  id          Int              @id @default(autoincrement())
+  productId   Int
+  product     Product          @relation(fields: [productId], references: [id])
+  locationId  Int
+  location    Location         @relation(fields: [locationId], references: [id])
+  quantity    Int
+  state       ReservationState @default(ACTIVA)
+  expiresAt   DateTime
+  createdById Int?
+  createdBy   User?            @relation(fields: [createdById], references: [id])
+  createdAt   DateTime         @default(now())
+  updatedAt   DateTime         @updatedAt
+
+  units StockUnit[]
+
+  @@index([state, expiresAt])
+}
+
+// Movimiento físico de stock: ENTRADA (carga) y SALIDA (venta confirmada).
+// Reservar/liberar NO generan movimiento (no cambia el stock físico).
+model StockMovement {
+  id         Int               @id @default(autoincrement())
+  productId  Int
+  product    Product           @relation(fields: [productId], references: [id])
+  locationId Int
+  location   Location          @relation(fields: [locationId], references: [id])
+  type       StockMovementType
+  quantity   Int
+  userId     Int?
+  user       User?             @relation(fields: [userId], references: [id])
+  detail     String?
+  createdAt  DateTime          @default(now())
+
+  @@index([productId])
 }

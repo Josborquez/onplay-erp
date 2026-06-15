@@ -6,6 +6,7 @@ import { authRouter } from "./routes/auth.js";
 import { protectedRouter } from "./routes/protected.js";
 import { catalogRouter } from "./routes/catalog.js";
 import { settingsRouter } from "./routes/settings.js";
+import { inventoryRouter } from "./routes/inventory.js";
 
 // Construye la app Express. Exportable para montarla en los tests (Supertest)
 // sin levantar un servidor.
@@ -27,6 +28,7 @@ export function createApp() {
   app.use("/api", protectedRouter);
   app.use("/api", catalogRouter);
   app.use("/api", settingsRouter);
+  app.use("/api", inventoryRouter);
 
   // Manejador de errores genérico: no filtra detalles internos.
   // eslint-disable-next-line no-unused-vars

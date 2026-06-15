@@ -2,14 +2,20 @@ import { prisma } from "../src/db.js";
 import { hashPassword } from "../src/lib/password.js";
 import { hashPin } from "../src/lib/pin.js";
 
-// Limpia las tablas entre tests (orden respeta las FKs).
+// Limpia las tablas entre tests (orden hijos → padres por las FKs).
 export async function resetDb() {
+  // Inventario (2B): StockUnit referencia Reservation/Product/Location.
+  await prisma.stockMovement.deleteMany();
+  await prisma.stockUnit.deleteMany();
+  await prisma.reservation.deleteMany();
+  await prisma.stockLevel.deleteMany();
   await prisma.auditLog.deleteMany();
   await prisma.session.deleteMany();
   await prisma.user.deleteMany();
   // Catálogo (bloque 2): Product referencia Game.
   await prisma.product.deleteMany();
   await prisma.game.deleteMany();
+  await prisma.location.deleteMany();
   await prisma.setting.deleteMany();
 }
 
