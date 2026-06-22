@@ -21,6 +21,8 @@ export function createApp() {
     })
   );
   app.use(express.json());
+  // Import ManaBox (2C): el CSV llega como texto plano.
+  app.use(express.text({ type: "text/csv", limit: "5mb" }));
 
   app.get("/api/health", (req, res) => res.json({ ok: true }));
 

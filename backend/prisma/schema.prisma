@@ -36,6 +36,9 @@ model User {
   // Inventario (2B): quién creó cada reserva y cada movimiento de stock.
   reservations Reservation[]
   movements    StockMovement[]
+
+  // Importaciones (2C): quién corrió cada lote de carga ManaBox.
+  importBatches ImportBatch[]
 }
 
 model Session {
@@ -119,6 +122,7 @@ model Product {
   scryfallId      String?
   misprint        Boolean?
   altered         Boolean?
+  imageUrl        String? // URL de Scryfall derivada en el import (2C)
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -249,4 +253,19 @@ model StockMovement {
   createdAt  DateTime          @default(now())
 
   @@index([productId])
+}
+
+// ───────────────────────────────────────────────────────────────────
+// Bloque 2C — Importación ManaBox. Cada lote (archivo CSV) se identifica
+// por el hash de su contenido para que reimportar el mismo lote no
+// duplique stock (idempotencia, bloque-2 §6).
+// ───────────────────────────────────────────────────────────────────
+model ImportBatch {
+  id          Int      @id @default(autoincrement())
+  source      String // "MANABOX"
+  hash        String   @unique // SHA-256 del contenido del CSV
+  rowCount    Int
+  createdById Int?
+  createdBy   User?    @relation(fields: [createdById], references: [id])
+  createdAt   DateTime @default(now())
 }

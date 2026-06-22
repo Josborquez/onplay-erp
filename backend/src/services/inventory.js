@@ -42,43 +42,47 @@ async function loadProduct(productId, tx = prisma) {
   return product;
 }
 
-// ENTRADA de stock (carga). UNIDAD: crea N unidades DISPONIBLE. CANTIDAD: suma
-// a `available`. Registra el movimiento físico. (Mínimo para probar el motor;
-// 2C/2D construyen sobre esto.)
-export async function addStock(productId, quantity, { locationId, userId } = {}) {
+// ENTRADA de stock (carga) dentro de una transacción dada. UNIDAD: crea N
+// unidades DISPONIBLE. CANTIDAD: suma a `available`. Registra el movimiento
+// físico. Reutilizable por el import ManaBox (2C), que carga muchas filas en
+// una sola transacción.
+export async function addStockTx(tx, productId, quantity, { locationId, userId } = {}) {
   const q = requireQuantity(quantity);
-  return prisma.$transaction(async (tx) => {
-    const product = await loadProduct(productId, tx);
-    const locId = await resolveLocation(locationId, tx);
+  const product = await loadProduct(productId, tx);
+  const locId = await resolveLocation(locationId, tx);
 
-    if (product.trackingMode === "UNIDAD") {
-      await tx.stockUnit.createMany({
-        data: Array.from({ length: q }, () => ({
-          productId: product.id,
-          locationId: locId,
-          state: "DISPONIBLE",
-        })),
-      });
-    } else {
-      await tx.stockLevel.upsert({
-        where: { productId_locationId: { productId: product.id, locationId: locId } },
-        update: { available: { increment: q } },
-        create: { productId: product.id, locationId: locId, available: q },
-      });
-    }
-
-    await tx.stockMovement.create({
-      data: {
+  if (product.trackingMode === "UNIDAD") {
+    await tx.stockUnit.createMany({
+      data: Array.from({ length: q }, () => ({
         productId: product.id,
         locationId: locId,
-        type: "ENTRADA",
-        quantity: q,
-        userId: userId ?? null,
-      },
+        state: "DISPONIBLE",
+      })),
     });
+  } else {
+    await tx.stockLevel.upsert({
+      where: { productId_locationId: { productId: product.id, locationId: locId } },
+      update: { available: { increment: q } },
+      create: { productId: product.id, locationId: locId, available: q },
+    });
+  }
 
-    return getStockStatus(product.id, { locationId: locId }, tx);
+  await tx.stockMovement.create({
+    data: {
+      productId: product.id,
+      locationId: locId,
+      type: "ENTRADA",
+      quantity: q,
+      userId: userId ?? null,
+    },
   });
+
+  return getStockStatus(product.id, { locationId: locId }, tx);
+}
+
+// ENTRADA de stock (carga) como operación atómica propia.
+export async function addStock(productId, quantity, opts = {}) {
+  return prisma.$transaction((tx) => addStockTx(tx, productId, quantity, opts));
 }
 
 // Reserva `quantity` unidades bajo candado de fila. Rechaza con 409 si no hay

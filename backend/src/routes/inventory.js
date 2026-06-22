@@ -8,6 +8,8 @@ import {
   release,
   getStockStatus,
 } from "../services/inventory.js";
+import { importManabox } from "../services/manabox.js";
+import { applyTradeCost, distributeBulkCost } from "../services/costing.js";
 
 export const inventoryRouter = Router();
 
@@ -30,6 +32,46 @@ inventoryRouter.post("/inventory/stock", requireAuth, canWrite, async (req, res,
       userId: req.auth.user.id,
     });
     res.status(201).json(status);
+  } catch (err) {
+    fail(err, res, next);
+  }
+});
+
+// POST /api/inventory/import/manabox — importa singles de Magic desde el CSV
+// de ManaBox (body: text/csv). Idempotente por lote (2C §6).
+inventoryRouter.post(
+  "/inventory/import/manabox",
+  requireAuth,
+  canWrite,
+  async (req, res, next) => {
+    try {
+      const csv = typeof req.body === "string" ? req.body : req.body?.csv;
+      const summary = await importManabox(csv, { userId: req.auth.user.id });
+      res.status(summary.alreadyImported ? 200 : 201).json(summary);
+    } catch (err) {
+      fail(err, res, next);
+    }
+  }
+);
+
+// POST /api/inventory/cost/trade — costo de trade (referencia × buy_multiplier).
+inventoryRouter.post("/inventory/cost/trade", requireAuth, canWrite, async (req, res, next) => {
+  try {
+    const { productId, referencePrice } = req.body || {};
+    const result = await applyTradeCost(productId, { referencePrice });
+    res.json(result);
+  } catch (err) {
+    fail(err, res, next);
+  }
+});
+
+// POST /api/inventory/cost/bulk — reparte el costo total de un lote ponderado
+// por el precio de venta de cada carta.
+inventoryRouter.post("/inventory/cost/bulk", requireAuth, canWrite, async (req, res, next) => {
+  try {
+    const { items, totalCost } = req.body || {};
+    const result = await distributeBulkCost(items, totalCost);
+    res.json(result);
   } catch (err) {
     fail(err, res, next);
   }

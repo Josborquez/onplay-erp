@@ -11,7 +11,7 @@ function trackingModeFor(type) {
 }
 
 // Aplica la regla de redondeo configurada (§5.1).
-function roundPrice(value, rule) {
+export function roundPrice(value, rule) {
   switch (rule) {
     case "ceil_1000":
       return Math.ceil(value / 1000) * 1000;

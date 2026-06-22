@@ -4,6 +4,8 @@ import { hashPin } from "../src/lib/pin.js";
 
 // Limpia las tablas entre tests (orden hijos → padres por las FKs).
 export async function resetDb() {
+  // Importaciones (2C): ImportBatch referencia User.
+  await prisma.importBatch.deleteMany();
   // Inventario (2B): StockUnit referencia Reservation/Product/Location.
   await prisma.stockMovement.deleteMany();
   await prisma.stockUnit.deleteMany();
