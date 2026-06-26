@@ -374,8 +374,14 @@ model Sale {
   voidedBy      User?     @relation("SaleVoidedBy", fields: [voidedById], references: [id])
   voidReason    String?   @db.Text
 
-  lines    SaleLine[]
-  payments Payment[]
+  // Wallet (bloque 4B): cliente asociado a la venta (opcional; obligatorio solo
+  // si se paga con STORE_CREDIT). Se difería al bloque 4 (ver §3 bloque 3).
+  customerId Int?
+  customer   Customer? @relation(fields: [customerId], references: [id])
+
+  lines           SaleLine[]
+  payments        Payment[]
+  walletMovements WalletMovement[]
 
   @@index([cashSessionId])
 }
@@ -423,5 +429,87 @@ model Payment {
   reference String? // últimos dígitos, nro. de transferencia, etc.
   createdAt DateTime      @default(now())
 
+  // Wallet (bloque 4B): cuando method = STORE_CREDIT apunta al movimiento de
+  // débito que respalda este pago (trazabilidad 1:1). null para los demás.
+  walletMovementId Int?            @unique
+  walletMovement   WalletMovement? @relation(fields: [walletMovementId], references: [id])
+
   @@index([saleId])
+}
+
+// ───────────────────────────────────────────────────────────────────
+// Bloque 4 — Wallet del cliente (saldo de tienda). Sub-tanda 4A: motor de
+// wallet autoritativo, sin tocar el POS. El cableado con el checkout/anulación
+// (STORE_CREDIT, Payment.walletMovementId, Sale.customerId) llega en 4B.
+// Reusa el patrón del 2B: saldo cacheado + ledger inmutable bajo candado de
+// fila. Dinero en CLP entero.
+// ───────────────────────────────────────────────────────────────────
+
+enum WalletMovementType {
+  CREDITO_MANUAL // + recarga/carga histórica registrada por staff
+  DEBITO_VENTA // - pago de una venta POS con store credit
+  REVERSA_VENTA // + devolución de saldo al anular una venta
+  AJUSTE // ± corrección manual (admin + PIN); el signo lo decide el operador
+  EXPIRACION // - vencimiento de crédito (hook §6, barrido diferido)
+}
+
+// Población de clientes, separada del User de staff (bloque 1). Un cliente de
+// mostrador puede existir con solo nombre+teléfono; rut/email son opcionales
+// pero únicos si existen. activo = soft-disable (nunca borra saldo ni historial).
+model Customer {
+  id        Int      @id @default(autoincrement())
+  rut       String?  @unique
+  nombre    String
+  email     String?  @unique
+  telefono  String?
+  activo    Boolean  @default(true)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  wallet      WalletAccount?
+  movimientos WalletMovement[]
+  ventas      Sale[] // ventas POS asociadas (bloque 4B)
+
+  @@index([nombre])
+}
+
+// Una cuenta por cliente. `saldo` es el cache que se bloquea con FOR UPDATE; la
+// verdad es la suma del ledger. Se crea junto con el Customer (saldo 0, D4-03).
+model WalletAccount {
+  id         Int      @id @default(autoincrement())
+  customerId Int      @unique
+  customer   Customer @relation(fields: [customerId], references: [id])
+  saldo      Int      @default(0) // CLP entero; invariante: == suma del ledger, >= 0
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+}
+
+// Ledger inmutable: cada cambio de saldo es una fila, nunca se edita ni se
+// borra. Una corrección es un movimiento nuevo (AJUSTE). `monto` siempre
+// positivo; el signo lo da `tipo`. Idempotencia por `reference` (@unique).
+// saleId y performedBy quedan como Int plano en 4A (la relación a Sale y la
+// trazabilidad pago↔movimiento se cablean en 4B).
+model WalletMovement {
+  id           Int                @id @default(autoincrement())
+  customerId   Int
+  customer     Customer           @relation(fields: [customerId], references: [id])
+  tipo         WalletMovementType
+  monto        Int // CLP entero, SIEMPRE positivo
+  saldoAntes   Int
+  saldoDespues Int
+  reference    String             @unique // misma reference => 409, no se duplica
+  origen       String // POS_VENTA | MANUAL | ANULACION | AJUSTE | EXPIRACION
+  motivo       String? // texto libre (obligatorio en AJUSTE)
+  expiraEn     DateTime? // solo créditos; null = no expira (hook §6)
+  saleId       Int? // FK a Sale cuando viene del POS (bloque 4B)
+  sale         Sale?              @relation(fields: [saleId], references: [id])
+  performedBy  Int // userId del staff que ejecutó (de la sesión)
+  createdAt    DateTime           @default(now())
+
+  // Wallet↔Pago (bloque 4B): el Payment STORE_CREDIT que respalda este débito.
+  payment Payment?
+
+  @@index([customerId, createdAt])
+  @@index([reference])
+  @@index([expiraEn])
 }

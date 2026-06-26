@@ -4,11 +4,14 @@ import { hashPin } from "../src/lib/pin.js";
 
 // Limpia las tablas entre tests (orden hijos → padres por las FKs).
 export async function resetDb() {
-  // POS (bloque 3): Payment→Sale, SaleLine→Sale/Reservation/StockUnit/Product,
-  // Sale→CashSession/User, CashSession→Terminal/User. Antes que sus padres.
-  await prisma.payment.deleteMany();
-  await prisma.saleLine.deleteMany();
-  await prisma.sale.deleteMany();
+  // Wallet (4) + POS (3): orden hijos → padres por las FKs cruzadas de 4B
+  // (Payment→WalletMovement, Sale→Customer, WalletMovement→Sale/Customer).
+  await prisma.payment.deleteMany(); // → Sale, WalletMovement
+  await prisma.walletMovement.deleteMany(); // → Customer, Sale
+  await prisma.saleLine.deleteMany(); // → Sale, Reservation, StockUnit, Product
+  await prisma.sale.deleteMany(); // → Customer, CashSession, User
+  await prisma.walletAccount.deleteMany(); // → Customer
+  await prisma.customer.deleteMany();
   await prisma.cashSession.deleteMany();
   await prisma.terminal.deleteMany();
   await prisma.counter.deleteMany();

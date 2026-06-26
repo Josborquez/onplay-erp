@@ -52,8 +52,8 @@ async function checkOwnPin(req, res) {
 // POST /api/pos/ventas — crea una venta BORRADOR sobre una caja abierta.
 posRouter.post("/pos/ventas", requireAuth, canOperate, async (req, res, next) => {
   try {
-    const { cashSessionId } = req.body || {};
-    const sale = await createSale(cashSessionId, { userId: req.auth.user.id });
+    const { cashSessionId, customerId } = req.body || {};
+    const sale = await createSale(cashSessionId, { userId: req.auth.user.id, customerId });
     res.status(201).json(sale);
   } catch (err) {
     fail(err, res, next);

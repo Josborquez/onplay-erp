@@ -8,6 +8,8 @@ import { catalogRouter } from "./routes/catalog.js";
 import { settingsRouter } from "./routes/settings.js";
 import { inventoryRouter } from "./routes/inventory.js";
 import { posRouter } from "./routes/pos.js";
+import { customersRouter } from "./routes/customers.js";
+import { walletRouter } from "./routes/wallet.js";
 
 // Construye la app Express. Exportable para montarla en los tests (Supertest)
 // sin levantar un servidor.
@@ -33,6 +35,8 @@ export function createApp() {
   app.use("/api", settingsRouter);
   app.use("/api", inventoryRouter);
   app.use("/api", posRouter);
+  app.use("/api", customersRouter);
+  app.use("/api", walletRouter);
 
   // Manejador de errores genérico: no filtra detalles internos.
   // eslint-disable-next-line no-unused-vars

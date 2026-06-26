@@ -32,6 +32,12 @@ export const SETTING_DEFS = {
   // POS (bloque 3): umbral de diferencia de caja (CLP) que exige PIN al cerrar
   // (03-canal-pos §10, AC-3.14).
   cash_diff_pin_threshold_clp: { type: "number", default: 500 },
+  // Wallet (bloque 4): días hasta expirar un crédito. 0 = nunca expira (barrido
+  // diferido, hook §6). Activar > 0 después no requiere migración.
+  wallet_credito_vigencia_dias: { type: "number", default: 0 },
+  // Wallet (bloque 4): sobre este monto (CLP) una acreditación manual exige PIN
+  // de supervisor (§9, AC-4.14).
+  wallet_acreditacion_pin_supervisor_umbral: { type: "number", default: 50000 },
 };
 
 const KNOWN_KEYS = Object.keys(SETTING_DEFS);

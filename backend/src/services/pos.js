@@ -3,9 +3,10 @@ import { reserve, release, confirmTx, reverseTx } from "./inventory.js";
 import { getSetting } from "./settings.js";
 import { verifyPin } from "../lib/pin.js";
 import { audit } from "./audit.js";
+import { debitar, revertir } from "./wallet.js";
 
-// Medios de pago habilitados. STORE_CREDIT existe en el modelo pero queda
-// deshabilitado hasta el wallet (bloque 4): el checkout lo rechaza.
+// Medios de pago habilitados. STORE_CREDIT debita el wallet del cliente de la
+// venta dentro de la misma transacción del checkout (bloque 4B).
 const PAYMENT_METHODS = ["CASH", "DEBIT", "CREDIT", "TRANSFER", "STORE_CREDIT"];
 
 // Canal POS (bloque 3). El carrito de una venta es un conjunto de reservas
@@ -48,20 +49,28 @@ export async function getSale(saleId) {
   return sale;
 }
 
-// Crea una venta BORRADOR sobre una sesión de caja ABIERTA.
-export async function createSale(cashSessionId, { userId }) {
+// Crea una venta BORRADOR sobre una sesión de caja ABIERTA. customerId es
+// opcional: asocia la venta a un cliente (necesario para pagar con STORE_CREDIT).
+export async function createSale(cashSessionId, { userId, customerId }) {
   const session = await prisma.cashSession.findUnique({
     where: { id: Number(cashSessionId) },
   });
   if (!session) throw err(404, "sesión de caja inexistente");
   if (session.state !== "ABIERTA") throw err(409, "la caja no está abierta");
 
+  let custId = null;
+  if (customerId != null) {
+    const customer = await prisma.customer.findUnique({ where: { id: Number(customerId) } });
+    if (!customer) throw err(404, "cliente inexistente");
+    custId = customer.id;
+  }
+
   const sale = await prisma.sale.create({
-    data: { cashSessionId: session.id, userId },
+    data: { cashSessionId: session.id, userId, customerId: custId },
   });
   await audit("crear_venta", {
     userId,
-    detail: JSON.stringify({ saleId: sale.id, cashSessionId: session.id }),
+    detail: JSON.stringify({ saleId: sale.id, cashSessionId: session.id, customerId: custId }),
   });
   return sale;
 }
@@ -146,8 +155,8 @@ export async function removeLine(saleId, lineId, { userId } = {}) {
   return getSale(saleId);
 }
 
-// Valida la lista de pagos y devuelve la suma aplicada. Rechaza STORE_CREDIT
-// (deshabilitado) y montos no enteros/positivos.
+// Valida la lista de pagos y devuelve la suma aplicada. Rechaza montos no
+// enteros/positivos. STORE_CREDIT se debita dentro del checkout (4B).
 function validatePayments(payments) {
   if (!Array.isArray(payments) || payments.length === 0) {
     throw err(400, "se requieren pagos");
@@ -155,7 +164,6 @@ function validatePayments(payments) {
   let sum = 0;
   for (const p of payments) {
     if (!PAYMENT_METHODS.includes(p.method)) throw err(400, "método de pago inválido");
-    if (p.method === "STORE_CREDIT") throw err(400, "crédito de tienda no disponible");
     const amount = Number(p.amount);
     if (!Number.isInteger(amount) || amount <= 0) throw err(400, "monto de pago inválido");
     sum += amount;
@@ -192,14 +200,38 @@ export async function checkout(saleId, { payments }, { userId }) {
         await confirmTx(tx, line.reservationId, { userId });
       }
 
-      await tx.payment.createMany({
-        data: payments.map((p) => ({
-          saleId: sale.id,
-          method: p.method,
-          amount: Number(p.amount),
-          reference: p.reference ?? null,
-        })),
-      });
+      // Registra los pagos. El candado del wallet se toma DESPUÉS de confirmar
+      // el inventario (orden inventario → wallet, evita deadlocks; §5.1). Cada
+      // STORE_CREDIT debita el wallet del cliente dentro de esta misma tx: si el
+      // saldo no alcanza, debitar lanza 422 y la venta entera hace rollback
+      // (sin fallback silencioso; cierra V-001).
+      for (const p of payments) {
+        let walletMovementId = null;
+        if (p.method === "STORE_CREDIT") {
+          if (sale.customerId == null) throw err(400, "STORE_CREDIT requiere un cliente asociado");
+          const mov = await debitar(
+            {
+              customerId: sale.customerId,
+              monto: Number(p.amount),
+              origen: "POS_VENTA",
+              reference: `POS-DEBITO-${sale.id}`,
+              saleId: sale.id,
+              performedBy: userId,
+            },
+            tx
+          );
+          walletMovementId = mov.id;
+        }
+        await tx.payment.create({
+          data: {
+            saleId: sale.id,
+            method: p.method,
+            amount: Number(p.amount),
+            reference: p.reference ?? null,
+            walletMovementId,
+          },
+        });
+      }
 
       // Folio correlativo sin huecos: el INSERT … ON DUPLICATE KEY UPDATE toma el
       // candado de la fila del contador; LAST_INSERT_ID es por conexión y la tx
@@ -462,6 +494,11 @@ export async function voidSale(saleId, { reason }, { userId }) {
       for (const line of sale.lines) {
         await reverseTx(tx, line.reservationId, { userId });
       }
+
+      // Wallet (4B): si la venta se pagó con STORE_CREDIT, devuelve el saldo
+      // dentro de esta misma tx. Idempotente por reference REVERSA-{saleId}:
+      // re-anular no duplica el reembolso. null si no usó store credit.
+      await revertir({ saleId: sale.id, performedBy: userId }, tx);
 
       return tx.sale.update({
         where: { id: sale.id },
