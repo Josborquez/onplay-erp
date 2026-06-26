@@ -11,6 +11,11 @@ import { audit } from "../services/audit.js";
 
 export const authRouter = Router();
 
+// En test el harness hace muchos logins desde una sola IP (un usuario por
+// caso), así que el límite se desactiva solo en ese entorno; en producción
+// sigue activo. NODE_ENV=test nunca ocurre en producción.
+const skipInTest = () => config.isTest;
+
 // Rate limit en login (§7): frena fuerza bruta sin revelar nada.
 const loginLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
@@ -18,6 +23,7 @@ const loginLimiter = rateLimit({
   standardHeaders: true,
   legacyHeaders: false,
   message: { error: "demasiados intentos, intente más tarde" },
+  skip: skipInTest,
 });
 
 // Rate limit en unlock: el PIN es de pocos dígitos (10.000 combinaciones), así
@@ -28,6 +34,7 @@ const unlockLimiter = rateLimit({
   standardHeaders: true,
   legacyHeaders: false,
   message: { error: "demasiados intentos, intente más tarde" },
+  skip: skipInTest,
 });
 
 // Crea una sesión nueva para un usuario y devuelve el token firmado.

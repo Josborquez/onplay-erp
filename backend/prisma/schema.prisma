@@ -39,6 +39,12 @@ model User {
 
   // Importaciones (2C): quién corrió cada lote de carga ManaBox.
   importBatches ImportBatch[]
+
+  // POS (bloque 3): cajas que abrió/cerró y ventas que operó/anuló.
+  cashSessionsOpened CashSession[] @relation("CashSessionOpenedBy")
+  cashSessionsClosed CashSession[] @relation("CashSessionClosedBy")
+  sales              Sale[]        @relation("SaleOperator")
+  salesVoided        Sale[]        @relation("SaleVoidedBy")
 }
 
 model Session {
@@ -133,6 +139,9 @@ model Product {
   reservations Reservation[]
   movements    StockMovement[]
 
+  // POS (bloque 3): líneas de venta que referencian este producto.
+  saleLines SaleLine[]
+
   @@index([gameId])
 }
 
@@ -157,19 +166,25 @@ enum StockUnitState {
 }
 
 // Estado del ciclo de vida de una reserva.
+// ANULADA (bloque 3): una reserva CONFIRMADA cuya venta se anuló intra-sesión;
+// su stock volvió a DISPONIBLE por la reversa acotada (Opción A §3).
 enum ReservationState {
   ACTIVA
   CONFIRMADA
   LIBERADA
   EXPIRADA
+  ANULADA
 }
 
 // Tipo de movimiento físico de stock (entradas/salidas reales).
+// ANULACION (bloque 3): movimiento compensatorio al anular una venta; revierte
+// una SALIDA previa devolviendo la unidad/cantidad a DISPONIBLE (no borra nada).
 enum StockMovementType {
   ENTRADA
   SALIDA
   AJUSTE
   TRANSFERENCIA
+  ANULACION
 }
 
 // Ubicación física del stock. 2B opera solo sobre `tienda`; las ferias se
@@ -198,6 +213,10 @@ model StockUnit {
   reservation   Reservation?   @relation(fields: [reservationId], references: [id])
   createdAt     DateTime       @default(now())
   updatedAt     DateTime       @updatedAt
+
+  // POS (bloque 3): líneas de venta que vendieron esta unidad física. Es una
+  // lista porque una unidad anulada y revendida puede aparecer en más de una.
+  saleLines SaleLine[]
 
   @@index([productId, locationId, state])
   @@index([reservationId])
@@ -234,6 +253,9 @@ model Reservation {
 
   units StockUnit[]
 
+  // POS (bloque 3): la línea de venta que respalda esta reserva (1:1).
+  saleLine SaleLine?
+
   @@index([state, expiresAt])
 }
 
@@ -268,4 +290,138 @@ model ImportBatch {
   createdById Int?
   createdBy   User?    @relation(fields: [createdById], references: [id])
   createdAt   DateTime @default(now())
+}
+
+// ───────────────────────────────────────────────────────────────────
+// Bloque 3 — Canal POS. El POS es un canal hijo: nunca escribe stock
+// directamente, todo pasa por el motor del bloque 2. Montos en CLP entero.
+// El cliente (cliente_id) se difiere al bloque 4 (wallet). La auditoría
+// reusa AuditLog (bloque 1), no hay tabla propia.
+// ───────────────────────────────────────────────────────────────────
+
+enum CashSessionState {
+  ABIERTA
+  CERRADA
+}
+
+enum SaleState {
+  BORRADOR
+  COMPLETADA
+  ANULADA
+  ABANDONADA
+}
+
+// STORE_CREDIT queda reservado pero deshabilitado hasta el wallet (bloque 4).
+enum PaymentMethod {
+  CASH
+  DEBIT
+  CREDIT
+  TRANSFER
+  STORE_CREDIT
+}
+
+// Punto de venta físico (mostrador, caja de eventos, …).
+model Terminal {
+  id        Int           @id @default(autoincrement())
+  name      String        @unique
+  active    Boolean       @default(true)
+  createdAt DateTime      @default(now())
+  sessions  CashSession[]
+}
+
+// Sesión de caja: apertura/cierre con cuadre (esperado vs. contado).
+// Invariante: como máximo una sesión ABIERTA por terminal (guard transaccional
+// en el servicio; MySQL no soporta índice único parcial).
+model CashSession {
+  id             Int              @id @default(autoincrement())
+  terminalId     Int
+  terminal       Terminal         @relation(fields: [terminalId], references: [id])
+  openedById     Int
+  openedBy       User             @relation("CashSessionOpenedBy", fields: [openedById], references: [id])
+  openingFloat   Int // efectivo inicial declarado (CLP)
+  openedAt       DateTime         @default(now())
+  state          CashSessionState @default(ABIERTA)
+  closedAt       DateTime?
+  closedById     Int?
+  closedBy       User?            @relation("CashSessionClosedBy", fields: [closedById], references: [id])
+  expectedAmount Int? // fondo + Σ pagos CASH (calculado al cerrar)
+  countedAmount  Int? // efectivo contado al cerrar
+  difference     Int? // contado − esperado
+  notes          String?          @db.Text
+
+  sales Sale[]
+
+  @@index([terminalId, state])
+}
+
+// Venta del mostrador. El folio es correlativo sin huecos, generado bajo lock
+// en el checkout. subtotal/descuento/total en CLP entero.
+model Sale {
+  id            Int       @id @default(autoincrement())
+  folio         Int?      @unique // se asigna en el checkout (COMPLETADA)
+  cashSessionId Int
+  cashSession   CashSession @relation(fields: [cashSessionId], references: [id])
+  userId        Int
+  user          User      @relation("SaleOperator", fields: [userId], references: [id])
+  state         SaleState @default(BORRADOR)
+  subtotal      Int       @default(0) // suma de líneas antes del descuento de total
+  totalDiscount Int       @default(0) // descuento aplicado al total
+  total         Int       @default(0) // a cobrar
+  createdAt     DateTime  @default(now())
+  completedAt   DateTime?
+  voidedAt      DateTime?
+  voidedById    Int?
+  voidedBy      User?     @relation("SaleVoidedBy", fields: [voidedById], references: [id])
+  voidReason    String?   @db.Text
+
+  lines    SaleLine[]
+  payments Payment[]
+
+  @@index([cashSessionId])
+}
+
+// Línea de venta. Cada línea se respalda en exactamente una reserva viva del
+// bloque 2 (1:1). Singles: cantidad 1 y unidad física identificada; CANTIDAD: N.
+model SaleLine {
+  id            Int          @id @default(autoincrement())
+  saleId        Int
+  sale          Sale         @relation(fields: [saleId], references: [id])
+  reservationId Int          @unique
+  reservation   Reservation  @relation(fields: [reservationId], references: [id])
+  productId     Int
+  product       Product      @relation(fields: [productId], references: [id])
+  stockUnitId   Int? // solo singles (tracking por unidad)
+  stockUnit     StockUnit?   @relation(fields: [stockUnitId], references: [id])
+  sku           String? // snapshot
+  description   String // snapshot
+  trackingMode  TrackingMode
+  quantity      Int
+  unitPrice     Int // snapshot del precio al agregar la línea (CLP)
+  lineDiscount  Int          @default(0)
+  lineTotal     Int
+
+  @@index([saleId])
+}
+
+// Contador atómico de secuencias (bloque 3). Hoy lo usa el folio correlativo
+// sin huecos del POS. El incremento se hace con INSERT … ON DUPLICATE KEY UPDATE
+// (toma candado de fila) dentro de la transacción del checkout: si esta hace
+// rollback, el folio también se revierte y no quedan huecos.
+model Counter {
+  name  String @id
+  value Int    @default(0)
+}
+
+// Pago aplicado a una venta. `amount` es el monto aplicado (no el recibido):
+// el exceso de efectivo es vuelto y no se persiste. Pago mixto = varias filas.
+model Payment {
+  id        Int           @id @default(autoincrement())
+  saleId    Int
+  sale      Sale          @relation(fields: [saleId], references: [id])
+  method    PaymentMethod
+  amount    Int // CLP entero
+  reference String? // últimos dígitos, nro. de transferencia, etc.
+  createdAt DateTime      @default(now())
+
+  @@index([saleId])
 }

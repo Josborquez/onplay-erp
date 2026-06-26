@@ -25,6 +25,13 @@ export const SETTING_DEFS = {
   // TTL de reserva en minutos. El mecanismo se construye en 2B; el valor fino
   // se ajusta en el bloque 6 (pago real). (§4)
   reservation_ttl_minutes: { type: "number", default: 30 },
+  // POS (bloque 3): umbral de descuento sin PIN, como % sobre el precio base de
+  // la línea (o el subtotal). Sobre este % un asistente requiere PIN de
+  // supervisor (03-canal-pos §8.3, AC-3.19).
+  discount_pin_threshold_pct: { type: "number", default: 10 },
+  // POS (bloque 3): umbral de diferencia de caja (CLP) que exige PIN al cerrar
+  // (03-canal-pos §10, AC-3.14).
+  cash_diff_pin_threshold_clp: { type: "number", default: 500 },
 };
 
 const KNOWN_KEYS = Object.keys(SETTING_DEFS);

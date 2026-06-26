@@ -7,7 +7,9 @@ export default defineConfig({
     // Los tests comparten una BD MySQL; correrlos en serie evita carreras.
     fileParallelism: false,
     sequence: { concurrent: false },
-    hookTimeout: 30000,
-    testTimeout: 30000,
+    // BD remota (Hostinger) lenta: los tests de POS con muchos round-trips de
+    // setup rozan los 60s. Margen amplio para no falsear timeouts por latencia.
+    hookTimeout: 60000,
+    testTimeout: 90000,
   },
 });

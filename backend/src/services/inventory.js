@@ -152,48 +152,105 @@ async function lockActiveReservation(tx, reservationId) {
   return reservation;
 }
 
-// Confirma una reserva (venta). UNIDAD: unidades RESERVADA → VENDIDA. CANTIDAD:
-// reserved -= q. Reservation → CONFIRMADA. Registra la SALIDA física.
-export async function confirm(reservationId, { userId } = {}) {
-  return prisma.$transaction(async (tx) => {
-    const reservation = await lockActiveReservation(tx, reservationId);
-    if (reservation.expiresAt < new Date()) throw err(409, "reserva vencida");
+// Confirma una reserva (venta) dentro de una transacción dada. UNIDAD: unidades
+// RESERVADA → VENDIDA. CANTIDAD: reserved -= q. Reservation → CONFIRMADA. Registra
+// la SALIDA física. Reutilizable por el checkout del POS (3C), que confirma todas
+// las reservas de una venta en una sola transacción atómica.
+export async function confirmTx(tx, reservationId, { userId } = {}) {
+  const reservation = await lockActiveReservation(tx, reservationId);
+  if (reservation.expiresAt < new Date()) throw err(409, "reserva vencida");
 
-    const product = await loadProduct(reservation.productId, tx);
-    if (product.trackingMode === "UNIDAD") {
-      await tx.stockUnit.updateMany({
-        where: { reservationId: reservation.id, state: "RESERVADA" },
-        data: { state: "VENDIDA" },
-      });
-    } else {
-      await tx.stockLevel.update({
-        where: {
-          productId_locationId: {
-            productId: reservation.productId,
-            locationId: reservation.locationId,
-          },
+  const product = await loadProduct(reservation.productId, tx);
+  if (product.trackingMode === "UNIDAD") {
+    await tx.stockUnit.updateMany({
+      where: { reservationId: reservation.id, state: "RESERVADA" },
+      data: { state: "VENDIDA" },
+    });
+  } else {
+    await tx.stockLevel.update({
+      where: {
+        productId_locationId: {
+          productId: reservation.productId,
+          locationId: reservation.locationId,
         },
-        data: { reserved: { decrement: reservation.quantity } },
-      });
-    }
-
-    await tx.reservation.update({
-      where: { id: reservation.id },
-      data: { state: "CONFIRMADA" },
-    });
-
-    await tx.stockMovement.create({
-      data: {
-        productId: reservation.productId,
-        locationId: reservation.locationId,
-        type: "SALIDA",
-        quantity: reservation.quantity,
-        userId: userId ?? null,
       },
+      data: { reserved: { decrement: reservation.quantity } },
     });
+  }
 
-    return tx.reservation.findUnique({ where: { id: reservation.id } });
+  await tx.reservation.update({
+    where: { id: reservation.id },
+    data: { state: "CONFIRMADA" },
   });
+
+  await tx.stockMovement.create({
+    data: {
+      productId: reservation.productId,
+      locationId: reservation.locationId,
+      type: "SALIDA",
+      quantity: reservation.quantity,
+      userId: userId ?? null,
+    },
+  });
+
+  return tx.reservation.findUnique({ where: { id: reservation.id } });
+}
+
+// Confirma una reserva como operación atómica propia.
+export async function confirm(reservationId, opts = {}) {
+  return prisma.$transaction((tx) => confirmTx(tx, reservationId, opts));
+}
+
+// Reversa acotada (bloque 3, Opción A §3): una reserva CONFIRMADA (vendida)
+// vuelve a DISPONIBLE bajo candado de fila. UNIDAD: la misma unidad física
+// VENDIDA → DISPONIBLE (preserva su identidad). CANTIDAD: available += q. Emite
+// un movimiento compensatorio ANULACION (no borra la SALIDA original). La usa
+// SOLO la anulación intra-sesión del POS, dentro de su misma transacción.
+export async function reverseTx(tx, reservationId, { userId } = {}) {
+  const rows = await tx.$queryRawUnsafe(
+    `SELECT id FROM Reservation WHERE id = ? FOR UPDATE`,
+    Number(reservationId)
+  );
+  if (!rows.length) throw err(404, "reserva inexistente");
+  const reservation = await tx.reservation.findUnique({
+    where: { id: Number(reservationId) },
+  });
+  if (reservation.state !== "CONFIRMADA") throw err(409, "la reserva no está confirmada");
+
+  const product = await loadProduct(reservation.productId, tx);
+  if (product.trackingMode === "UNIDAD") {
+    await tx.stockUnit.updateMany({
+      where: { reservationId: reservation.id, state: "VENDIDA" },
+      data: { state: "DISPONIBLE", reservationId: null },
+    });
+  } else {
+    await tx.stockLevel.update({
+      where: {
+        productId_locationId: {
+          productId: reservation.productId,
+          locationId: reservation.locationId,
+        },
+      },
+      data: { available: { increment: reservation.quantity } },
+    });
+  }
+
+  await tx.reservation.update({
+    where: { id: reservation.id },
+    data: { state: "ANULADA" },
+  });
+
+  await tx.stockMovement.create({
+    data: {
+      productId: reservation.productId,
+      locationId: reservation.locationId,
+      type: "ANULACION",
+      quantity: reservation.quantity,
+      userId: userId ?? null,
+    },
+  });
+
+  return tx.reservation.findUnique({ where: { id: reservation.id } });
 }
 
 // Lógica común de liberación de una reserva ACTIVA: el stock vuelve a estar
