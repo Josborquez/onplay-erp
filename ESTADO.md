@@ -4,7 +4,7 @@
 
 ERP autoritativo para tienda TCG (Onplay Games). El ERP es **dueño de la verdad del stock**: ningún canal descuenta inventario por su cuenta, todo pasa por el contrato `reservar → confirmar | liberar` bajo candado de fila.
 
-**Estado global:** Bloques 1, 2 y 3 completos y verificados en backend (**62 tests en verde** contra MySQL real). Frontend solo Bloque 1 (login).
+**Estado global:** Bloques 1, 2, 3 y 4 completos y verificados en backend (**78 tests en verde** contra MySQL real). Frontend solo Bloque 1 (login).
 
 ---
 
@@ -18,10 +18,10 @@ backend/
     config.js · db.js · app.js · server.js
     lib/         password · pin · jwt · google      (bcrypt rounds 12, timing-safe)
     middleware/  auth (requireAuth/requireSession) · requireRole
-    routes/      auth · protected · catalog · settings · inventory · pos
-    services/    audit · catalog · settings · inventory · manabox · costing · pos
+    routes/      auth · protected · catalog · settings · inventory · pos · customers · wallet
+    services/    audit · catalog · settings · inventory · manabox · costing · pos · customers · wallet
   prisma/        schema.prisma · seed.js
-  tests/         auth · catalog · inventory · manabox · costing · pos
+  tests/         auth · catalog · inventory · manabox · costing · pos · wallet
 frontend/
   src/           auth/ · pages/ · components/ · api/client.js   (solo Bloque 1)
 ```
@@ -34,10 +34,11 @@ frontend/
 - Seguridad: helmet, CORS whitelist, rate-limit en login/unlock, credenciales hasheadas, errores de login genéricos (no revelan si el correo existe).
 - BD: Hostinger MySQL remoto, **prod y test separadas**.
 
-**Modelo de datos:** 18 modelos, 9 enums.
+**Modelo de datos:** 21 modelos, 10 enums.
 - *Bloque 1:* `User`, `Session`, `AuditLog` + enum `Role`.
 - *Bloque 2:* `Game`, `Product`, `Setting`, `Location`, `StockUnit`, `StockLevel`, `Reservation`, `StockMovement`, `ImportBatch` + enums `ProductType`, `TrackingMode`, `StockUnitState`, `ReservationState`, `StockMovementType`.
 - *Bloque 3:* `Terminal`, `CashSession`, `Sale`, `SaleLine`, `Counter`, `Payment` + enums `CashSessionState`, `SaleState`, `PaymentMethod`.
+- *Bloque 4:* `Customer`, `WalletAccount`, `WalletMovement` + enum `WalletMovementType`. Cambios aditivos al Bloque 3: `Payment.walletMovementId`, `Sale.customerId`.
 
 ---
 
@@ -51,8 +52,10 @@ frontend/
 | **2C — Import ManaBox** | Parser CSV propio, SKU determinista, idempotencia por hash de archivo, imágenes Scryfall | Backend | 3 |
 | **2D — Costo en compra** | Costo de trade (ref × buy_multiplier), reparto de costo bulk ponderado por precio | Backend | 5 |
 | **3 — Canal POS** | Caja, carrito↔inventario, checkout atómico, folio sin huecos, descuentos, anulación, cuadre | Backend | 22 |
+| **4A — Motor de wallet** | `Customer` + saldo de tienda: ledger inmutable (`creditar/debitar/ajustar/revertir`) bajo candado de fila, idempotente por `reference`, PIN propio/supervisor | Backend | 10 |
+| **4B — Integración POS** | `STORE_CREDIT` como medio de pago: débito atómico en el checkout (`Payment.walletMovementId` 1:1) y reversa automática al anular; saldo insuficiente hace rollback total | Backend | 6 |
 
-**Pendientes (no iniciados):** Bloque 4 (wallet/saldo), Bloque 5 (WooCommerce — el ERP toma la verdad del stock), Bloque 6 (pagos reales Webpay/Mercado Pago). Hasta ahí el "pago confirmado" es simulado.
+**Pendientes (no iniciados):** Bloque 5 (WooCommerce — el ERP toma la verdad del stock), Bloque 6 (pagos reales Webpay/Mercado Pago). Hasta ahí el "pago confirmado" es simulado.
 
 ---
 
@@ -106,6 +109,23 @@ Base: `/api` · Auth: `Bearer <token>` salvo donde se indica.
 | GET | `/sesiones/activa` | lectura |
 | POST | `/sesiones/:id/cerrar` (cuadre, PIN si dif>umbral) | operar |
 | POST | `/sesiones/:id/no-sale` | operar + PIN |
+
+### Clientes — `/api/customers`
+| Método | Ruta | Acceso |
+|---|---|---|
+| POST | `/customers` | operar (alta en mostrador) |
+| GET | `/customers` · `/customers/:id` · `?q=` | autenticado |
+| PATCH | `/customers/:id` | admin |
+| PATCH | `/customers/:id/activo` | admin (soft-disable) |
+
+### Wallet — `/api/wallet`
+| Método | Ruta | Acceso |
+|---|---|---|
+| GET | `/wallet/:customerId` · `/movimientos` | lectura (+contador) |
+| POST | `/wallet/:customerId/creditar` | operar + PIN propio (PIN supervisor sobre umbral) |
+| POST | `/wallet/:customerId/ajustar` | admin + PIN + motivo |
+
+No hay endpoint de débito manual: el saldo solo se gasta vía checkout del POS.
 
 ### Otros
 - `GET /api/health` — público.
